@@ -95,6 +95,18 @@ int vfbfs_gen_file_write(struct vfbfs *fs, struct vfbfs_file *file, const char *
     return 0;
 }
 
+int vfbfs_gen_file_truncate(struct vfbfs *fs, struct vfbfs_file *file, const char *path, off_t size)
+{
+    pthread_mutex_lock(&file->vf_lock);
+    if (file->vf_private != NULL) {
+        free(file->vf_private);
+    }
+    file->vf_private = calloc(size, sizeof(char));
+    file->vf_stat.st_size = size;
+    pthread_mutex_unlock(&file->vf_lock);
+    return 0;
+}
+
 int vfbfs_gen_file_release(struct vfbfs *fs, struct vfbfs_file *file
     , const char *path, struct fuse_file_info *fi)
 {
@@ -109,6 +121,7 @@ struct vfbfs_file_ops vfbfs_gen_file_oprs = {
     .f_close      = vfbfs_gen_file_close,
     .f_read       = vfbfs_gen_file_read,
     .f_write      = vfbfs_gen_file_write,
+    .f_truncate   = vfbfs_gen_file_truncate,
     .f_getattr    = vfbfs_gen_file_getattr,
     .f_release    = vfbfs_gen_file_release,
 };

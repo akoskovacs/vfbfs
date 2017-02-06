@@ -109,6 +109,27 @@ static int vfbfs_fo_write(const char *path, const char *data, size_t size
     return -EBADF;
 }
 
+static int vfbfs_fo_truncate(const char *path, off_t size)
+{
+    struct vfbfs *fs        = vfbfs_get_fs();
+    struct vfbfs_file *file = vfbfs_lookup(fs, path);
+    if (file != NULL) {
+        if (file->vf_oprs != NULL && file->vf_oprs->f_write != NULL) {
+            return file->vf_oprs->f_truncate(fs, file, path, size);
+        }
+        return 0;
+    }
+    return -ENOENT;
+}
+
+int vfbfs_fo_fsync(const char *path, int op, struct fuse_file_info *fi)
+{
+    (void)path;
+    (void)op;
+    (void)fi;
+    return 0;
+}
+
 static int vfbfs_fo_close(const char *path, struct fuse_file_info *fi)
 {
     struct vfbfs *fs        = vfbfs_get_fs();
@@ -232,6 +253,8 @@ struct vfbfs_superblock *vfbfs_superblock_alloc(struct vfbfs *fs)
         .open       = vfbfs_fo_open,
         .read       = vfbfs_fo_read,
         .write      = vfbfs_fo_write,
+        .truncate   = vfbfs_fo_truncate,
+        .fsync      = vfbfs_fo_fsync,
         .release    = NULL,
         //.close      = vfbfs_fo_close,
         .release    = vfbfs_fo_release,
@@ -284,7 +307,7 @@ int main(int argc, char *argv[])
 {
     struct vfbfs fs;
     struct vfbfs_dir *fb, *config;
-    struct vfbfs_file *readme;
+    struct vfbfs_file *readme, *empty;
     char *msg = strdup("This is a readme file!\n");
 
     /* TODO --help */
@@ -294,8 +317,9 @@ int main(int argc, char *argv[])
     fb = vfbfs_dir_create_in(&fs, NULL, "fb");
     config = vfbfs_dir_create_in(&fs, NULL, "config");
     readme = vfbfs_file_create_in(&fs, config, "readme.txt");
+    empty  = vfbfs_file_create_in(&fs, config, "empty.txt");
     readme->vf_private = msg;
-    readme->vf_stat.st_size = strlen(msg)+1;
+    readme->vf_stat.st_size = strlen(msg);
 
     return vfbfs_main(&fs, argc, argv);
 }
