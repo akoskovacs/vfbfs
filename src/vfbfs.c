@@ -47,7 +47,10 @@ static const struct fuse_opt option_spec[] = {
 struct vfbfs *vfbfs_get_fs(void)
 {
     struct fuse_context *ctx = fuse_get_context();
-    return (struct vfbfs *)ctx->private_data;
+    if (ctx != NULL) {
+        return (struct vfbfs *)ctx->private_data;
+    }
+    return NULL;
 }
 
 static void *vfbfs_fo_init(struct fuse_conn_info *ci)
@@ -63,63 +66,60 @@ static void vfbfs_fo_destroy(void *p)
 
 static int vfbfs_fo_open(const char *path, struct fuse_file_info *fi)
 {
-    struct vfbfs *fs        = vfbfs_get_fs();
-    struct vfbfs_file *file = vfbfs_lookup(fs, path);
-    if (file != NULL) {
-        fi->fh = (uint64_t)file;
-        if (file->vf_oprs != NULL && file->vf_oprs->f_open) {
-            return file->vf_oprs->f_open(fs, file, path, fi);
-        }
-        return 0;
+    struct vfbfs *fs      = vfbfs_get_fs();
+    struct vfbfs_entry *e = vfbfs_entry_lookup(fs, path);
+    struct vfbfs_file  *f = vfbfs_entry_get_file(e);
+    if (e == NULL) {
+        return -ENOENT;
+    } 
+    if (f) {
+        return vfbfs_file_call_operation(fs, f, VFBFS_F_OPEN, path, fi);
     }
-    return -ENOENT;
+    return -EISDIR;
 }
 
 static int vfbfs_fo_read(const char *path, char *data, size_t size
     , off_t off, struct fuse_file_info *fi)
 {
-    struct vfbfs *fs        = vfbfs_get_fs();
-    struct vfbfs_file *file = (struct vfbfs_file *)fi->fh;
-    if (file != NULL) {
-        if (vfbfs_file_is_dir(file)) {
-            return -EISDIR;
-        }
-        if (file->vf_oprs != NULL && file->vf_oprs->f_read) {
-            return file->vf_oprs->f_read(fs, file, path, data, size, off, fi);
-        }
-        return 0;
+    struct vfbfs *fs      = vfbfs_get_fs();
+    struct vfbfs_entry *e = (struct vfbfs_entry *)fi->fh;
+    struct vfbfs_file  *f = vfbfs_entry_get_file(e);
+    if (e == NULL) {
+        return -EBADF;
     }
-    return -EBADF;
+    if (f) {
+        return vfbfs_file_call_operation(fs, f, VFBFS_F_READ, path, data, size, off, fi);
+    }
+    return -EISDIR;
 }
 
 static int vfbfs_fo_write(const char *path, const char *data, size_t size
     , off_t off, struct fuse_file_info *fi)
 {
-    struct vfbfs *fs        = vfbfs_get_fs();
-    struct vfbfs_file *file = (struct vfbfs_file *)fi->fh;
-    if (file != NULL) {
-        if (vfbfs_file_is_dir(file)) {
-            return -EISDIR;
-        }
-        if (file->vf_oprs != NULL && file->vf_oprs->f_write != NULL) {
-            return file->vf_oprs->f_write(fs, file, path, data, size, off, fi);
-        }
-        return 0;
+    struct vfbfs *fs      = vfbfs_get_fs();
+    struct vfbfs_entry *e = (struct vfbfs_entry *)fi->fh;
+    struct vfbfs_file  *f = vfbfs_entry_get_file(e);
+    if (e == NULL) {
+        return -EBADF;
+    } 
+    if (f) {
+        return vfbfs_file_call_operation(fs, f, VFBFS_F_WRITE, path, data, size, off, fi);
     }
-    return -EBADF;
+    return -EISDIR;
 }
 
 static int vfbfs_fo_truncate(const char *path, off_t size)
 {
-    struct vfbfs *fs        = vfbfs_get_fs();
-    struct vfbfs_file *file = vfbfs_lookup(fs, path);
-    if (file != NULL) {
-        if (file->vf_oprs != NULL && file->vf_oprs->f_write != NULL) {
-            return file->vf_oprs->f_truncate(fs, file, path, size);
-        }
-        return 0;
+    struct vfbfs *fs      = vfbfs_get_fs();
+    struct vfbfs_entry *e = vfbfs_entry_lookup(fs, path);
+    struct vfbfs_file  *f = vfbfs_entry_get_file(e);
+    if (e == NULL) {
+        return -EBADF;
+    } 
+    if (f) {
+        return vfbfs_file_call_operation(fs, f, VFBFS_F_TRUNCATE, path, size);
     }
-    return -ENOENT;
+    return -EISDIR;
 }
 
 int vfbfs_fo_fsync(const char *path, int op, struct fuse_file_info *fi)
@@ -132,28 +132,28 @@ int vfbfs_fo_fsync(const char *path, int op, struct fuse_file_info *fi)
 
 static int vfbfs_fo_close(const char *path, struct fuse_file_info *fi)
 {
-    struct vfbfs *fs        = vfbfs_get_fs();
-    struct vfbfs_file *file = (struct vfbfs_file *)fi->fh;
-    if (file != NULL) {
-        fi->fh = (uint64_t)file;
-        if (file->vf_oprs != NULL && file->vf_oprs->f_close != NULL) {
-            return file->vf_oprs->f_close(fs, file, path, fi);
-        }
-        return 0;
+    struct vfbfs *fs      = vfbfs_get_fs();
+    struct vfbfs_entry *e = (struct vfbfs_entry *)fi->fh;
+    struct vfbfs_file  *f = vfbfs_entry_get_file(e);
+    if (e == NULL) {
+        return -EBADF;
+    } 
+    if (f) {
+        return vfbfs_file_call_operation(fs, f, VFBFS_F_CLOSE, path, fi);
     }
-    return -ENOENT;
+    return -EISDIR;
 }
 
 static int vfbfs_fo_release(const char *path, struct fuse_file_info *fi)
 {
-    struct vfbfs *fs        = vfbfs_get_fs();
-    struct vfbfs_file *file = (struct vfbfs_file *)fi->fh;
-    if (file != NULL) {
-        fi->fh = (uint64_t)file;
-        if (file->vf_oprs != NULL && file->vf_oprs->f_release != NULL) {
-            return file->vf_oprs->f_release(fs, file, path, fi);
-        }
-        return 0;
+    struct vfbfs *fs      = vfbfs_get_fs();
+    struct vfbfs_entry *e = (struct vfbfs_entry *)fi->fh;
+    struct vfbfs_file  *f = vfbfs_entry_get_file(e);
+    if (e == NULL) {
+        return -EBADF;
+    } 
+    if (f) {
+        return vfbfs_file_call_operation(fs, f, VFBFS_F_RELEASE, path, fi);
     }
     return -ENOENT;
 }
@@ -161,47 +161,33 @@ static int vfbfs_fo_release(const char *path, struct fuse_file_info *fi)
 static int vfbfs_fo_getattr(const char *path, struct stat *st)
 {
     struct vfbfs *fs        = vfbfs_get_fs();
-    if (fs == NULL) {
-        return -ENOENT;
-    }
-    struct vfbfs_file *file = vfbfs_lookup(fs, path);
-    if (file != NULL) {
-        // fi->fh = (uint64_t)file;
-        if (vfbfs_file_is_dir(file)) {
-            struct vfbfs_dir *d = (struct vfbfs_dir *)file->vf_private;
-            if (d != NULL && d->vd_oprs != NULL && d->vd_oprs->d_getattr != NULL) {
-                return d->vd_oprs->d_getattr(fs, d, path, st);
-            }
+    struct vfbfs_entry *e   = vfbfs_entry_lookup(fs, path);
+    if (e != NULL) {
+        if (vfbfs_entry_is_dir(e)) {
+            return vfbfs_dir_call_operation(fs, e->e_elem.dir, VFBFS_D_GETATTR, st);
         } else {
-            if (file->vf_oprs != NULL && file->vf_oprs->f_getattr != NULL) {
-                return file->vf_oprs->f_getattr(fs, file, path, st);
-            }
+            return vfbfs_file_call_operation(fs, e->e_elem.file, VFBFS_F_GETATTR, st);
         }
-        return 0;
     }
     return -ENOENT;
 }
 
 static int vfbfs_fo_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
+    /* dir lookup */
     return 0;
 }
 
 static int vfbfs_fo_opendir(const char *path, struct fuse_file_info *fi)
 {
     struct vfbfs *fs        = vfbfs_get_fs();
-    struct vfbfs_file *fd   = vfbfs_lookup(fs, path);
-    struct vfbfs_dir  *dir;
-    if (fd != NULL) {
-        if (!vfbfs_file_is_dir(fd)) {
+    struct vfbfs_entry *e   = vfbfs_entry_lookup(fs, path);
+    struct vfbfs_dir  *dir  = vfbfs_entry_get_dir(e);
+    if (e != NULL) {
+        if (dir == NULL) {
             return -ENOTDIR;
         }
-        dir    = (struct vfbfs_dir *)fd->vf_private;
-        fi->fh = (uint64_t)fd;
-        if (dir->vd_oprs != NULL && dir->vd_oprs->d_open != NULL) {
-            return dir->vd_oprs->d_open(fs, dir, path, fi);
-        }
-        return 0;
+        return vfbfs_dir_call_operation(fs, dir, VFBFS_D_OPEN, path, fi);
     }
     return -ENOENT;
 }
@@ -210,14 +196,10 @@ static int vfbfs_fo_readdir(const char *path, void *buf, fuse_fill_dir_t filler
     , off_t off, struct fuse_file_info *fi)
 {
     struct vfbfs *fs        = vfbfs_get_fs();
-    struct vfbfs_file *fd   = (struct vfbfs_file *)fi->fh;
-    struct vfbfs_dir *dir;
-    if (vfbfs_file_is_dir(fd)) {
-        dir = (struct vfbfs_dir *)fd->vf_private;
-        if (dir->vd_oprs != NULL && dir->vd_oprs->d_read != NULL) {
-            return dir->vd_oprs->d_read(fs, dir, path, buf, filler, off, fi);
-        }
-        return 0;
+    struct vfbfs_entry *e   = vfbfs_entry_lookup(fs, path);
+    struct vfbfs_dir  *dir  = vfbfs_entry_get_dir(e);
+    if (dir) {
+        return vfbfs_dir_call_operation(fs, dir, VFBFS_D_READ, path, buf, filler, off, fi);
     }
     return -EBADF;
 }
@@ -225,14 +207,10 @@ static int vfbfs_fo_readdir(const char *path, void *buf, fuse_fill_dir_t filler
 static int vfbfs_fo_releasedir(const char *path, struct fuse_file_info *fi)
 {
     struct vfbfs *fs        = vfbfs_get_fs();
-    struct vfbfs_file *fd   = (struct vfbfs_file *)fi->fh;
-    struct vfbfs_dir *dir;
-    if (vfbfs_file_is_dir(fd)) {
-        dir = (struct vfbfs_dir *)fd->vf_private;
-        if (dir->vd_oprs != NULL && dir->vd_oprs->d_release != NULL) {
-            return dir->vd_oprs->d_release(fs, dir, path, fi);
-        }
-        return 0;
+    struct vfbfs_entry *e   = vfbfs_entry_lookup(fs, path);
+    struct vfbfs_dir  *dir  = vfbfs_entry_get_dir(e);
+    if (dir) {
+        return vfbfs_dir_call_operation(fs, dir, VFBFS_D_RELEASE, fi);
     }
     return -EBADF;
 }
@@ -243,9 +221,12 @@ struct vfbfs_superblock *vfbfs_superblock_alloc(struct vfbfs *fs)
     struct vfbfs_superblock *sb = (struct vfbfs_superblock *)malloc(sizeof(struct vfbfs_superblock));
     sb->sb_mountpoint = NULL;
     sb->sb_file_count = 0;
-    sb->sb_def_oprs    = &vfbfs_gen_file_oprs;
+    sb->sb_dfile_oprs  = vfbfs_file_get_mem_ops();
+    sb->sb_dentry_oprs = vfbfs_entry_get_mem_ops();
+    sb->sb_ddir_oprs   = vfbfs_dir_get_generic_ops();
     //pthread_rwlockattr_init(&sb.w_lock);
     pthread_mutex_init(&sb->sb_wlock, NULL);
+    /* Set the "global" FUSE operation table up */
     sb->sb_fs_oprs  = (struct fuse_operations) {
         .init       = vfbfs_fo_init,
         .destroy    = vfbfs_fo_destroy,
@@ -256,7 +237,7 @@ struct vfbfs_superblock *vfbfs_superblock_alloc(struct vfbfs *fs)
         .truncate   = vfbfs_fo_truncate,
         .fsync      = vfbfs_fo_fsync,
         .release    = NULL,
-        //.close      = vfbfs_fo_close,
+        //.close      = vfbfs_fo_close, // noexist
         .release    = vfbfs_fo_release,
         .getattr    = vfbfs_fo_getattr,
 
@@ -274,7 +255,7 @@ struct vfbfs *vfbfs_init(struct vfbfs *fs)
     fs->fs_superblock = sb;
     sb->sb_fs = fs;
     sb->sb_root = vfbfs_dir_new(fs, strdup("/"));
-    sb->sb_root->vd_superblock = sb;
+    sb->sb_root->d_superblock = sb;
     return fs;
 }
 
@@ -318,8 +299,8 @@ int main(int argc, char *argv[])
     config = vfbfs_dir_create_in(&fs, NULL, "config");
     readme = vfbfs_file_create_in(&fs, config, "readme.txt");
     empty  = vfbfs_file_create_in(&fs, config, "empty.txt");
-    readme->vf_private = msg;
-    readme->vf_stat.st_size = strlen(msg);
+    readme->f_content = msg;
+    vfbfs_file_set_size(readme, strlen(msg));
 
     return vfbfs_main(&fs, argc, argv);
 }

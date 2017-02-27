@@ -25,32 +25,27 @@
 #include <pthread.h>
 #include <string.h>
 #include <stdbool.h>
+#include <errno.h>
+#include <stdarg.h>
 
 extern struct vfbfs_file_ops vfbfs_gen_file_oprs;
-extern int vfbfs_gen_file_getattr(struct vfbfs *, struct vfbfs_file *, const char *, struct stat *);
-
-int vfbfs_gen_dir_getattr(struct vfbfs *fs, struct vfbfs_dir *d, const char *path, struct stat *st)
-{
-    return vfbfs_gen_file_getattr(fs, d->vd_file, path, st);
-}
 
 int vfbfs_gen_dir_open(struct vfbfs *fs, struct vfbfs_dir *d, const char *path, struct fuse_file_info *fi)
 {
     return 0;    
 }
 
-int vfbfs_gen_dir_read(struct vfbfs *fs, struct vfbfs_dir *dir, const char *path, void *buf, fuse_fill_dir_t filler, off_t off, struct fuse_file_info *fi)
+int vfbfs_gen_dir_read(struct vfbfs *fs, struct vfbfs_dir *dir
+    , const char *path, void *buf, fuse_fill_dir_t filler, off_t off, struct fuse_file_info *fi)
 {
-    pthread_rwlock_rdlock(&dir->vd_rwlock);
+    pthread_rwlock_rdlock(&dir->d_rwlock);
     filler(buf, ".", NULL, 0);
     filler(buf, "..", NULL, 0);
-    struct vfbfs_file *f;
-    //syslog(LOG_NOTICE, "reading dir: %s", dir->vd_file->vf_name);
-    RB_FOREACH(f, VFBFS_FILE_TREE, &dir->vd_files) {
-        //syslog(LOG_NOTICE, "entry: %s", f->vf_name);
-        filler(buf, f->vf_name, NULL, 0);
+    struct vfbfs_entry *e;
+    RB_FOREACH(e, VFBFS_ENTRY_TREE, &dir->d_entries) {
+        filler(buf, e->e_name, NULL, 0);
     }
-    pthread_rwlock_unlock(&dir->vd_rwlock);
+    pthread_rwlock_unlock(&dir->d_rwlock);
     return 0;
 }
 
@@ -62,71 +57,85 @@ struct vfbfs_dir *vfbfs_get_rootdir(struct vfbfs *fs)
     return NULL;
 }
 
+struct vfbfs_dir *vfbfs_dir_init(struct vfbfs_dir *d)
+{
+    d->d_ddir_oprs   = NULL;
+    d->d_dentry_oprs = NULL;
+    d->d_dfile_oprs  = NULL;
+    d->d_private     = NULL;
+    d->d_superblock  = NULL;
+    d->d_entry       = NULL;
+    RB_INIT(&d->d_entries);
+    pthread_rwlock_init(&d->d_rwlock, NULL);
+    return d;
+}
+
 struct vfbfs_dir *vfbfs_dir_alloc(struct vfbfs *fs)
 {
     (void) fs;
-    struct vfbfs_dir *d = (struct vfbfs_dir *)malloc(sizeof(struct vfbfs_dir));
+    struct vfbfs_dir *d = (struct vfbfs_dir *)malloc(sizeof(*d));
     if (d == NULL) {
         return NULL;
     }
-    d->vd_def_oprs = NULL;
-    d->vd_private  = NULL;
-    d->vd_superblock = NULL;
-    d->vd_file  = NULL;
-    RB_INIT(&d->vd_files);
-    pthread_rwlock_init(&d->vd_rwlock, NULL);
-    return d;
+    return vfbfs_dir_init(d);
+}
+
+static struct vfbfs_dir_ops vfbfs_dir_gen_oprs = {
+    .d_read     = vfbfs_gen_dir_read,
+    .d_open     = vfbfs_gen_dir_open,
+    .d_close    = NULL,
+    .d_getattr  = NULL,
+    .d_create   = NULL,
+};
+
+struct vfbfs_dir_ops *vfbfs_dir_get_generic_ops(void)
+{
+    return &vfbfs_dir_gen_oprs;
 }
 
 struct vfbfs_dir *vfbfs_dir_new(struct vfbfs *fs, char *name)
 {
-    struct vfbfs_file *f = vfbfs_file_new(fs, name);
+    struct vfbfs_entry *e = vfbfs_entry_dir_alloc(fs);
     struct vfbfs_dir *d  = vfbfs_dir_alloc(fs);
-    if (f == NULL || d == NULL) {
+    if (e == NULL || d == NULL) {
+        free(e);
+        free(d);
         return NULL;
     }
+    e->e_name = name;
+    e->e_elem.dir = d;
+    d->d_entry    = e;
+
     if (fs != NULL && fs->fs_superblock != NULL) {
-        d->vd_def_oprs = fs->fs_superblock->sb_def_oprs;
-        d->vd_oprs = (struct vfbfs_dir_ops *)malloc(sizeof(struct vfbfs_dir_ops));
-        #if 0
-        d->vd_oprs = &(struct vfbfs_dir_ops) {
-            .d_create   = NULL,
-            .d_open     = vfbfs_gen_dir_open,
-            .d_close    = NULL,
-            .d_read     = vfbfs_gen_dir_read,
-            .d_getattr  = vfbfs_gen_dir_getattr
-        };
-        #endif
-        d->vd_oprs->d_create = NULL;
-        d->vd_oprs->d_open   = vfbfs_gen_dir_open;
-        d->vd_oprs->d_close  = NULL;
-        d->vd_oprs->d_read   = vfbfs_gen_dir_read;
-        d->vd_oprs->d_getattr= vfbfs_gen_dir_getattr;
-        d->vd_superblock = fs->fs_superblock;
+        d->d_dentry_oprs = fs->fs_superblock->sb_dentry_oprs;
+        d->d_dfile_oprs  = fs->fs_superblock->sb_dfile_oprs;
+        d->d_ddir_oprs   = fs->fs_superblock->sb_ddir_oprs;
+        d->d_superblock  = fs->fs_superblock;
     }
-    f->vf_name    = name;
-    f->vf_stat.st_mode |= S_IFDIR;
-    f->vf_stat.st_size = 4096;
-    f->vf_private = (void *)d;
-    d->vd_file    = f;
     return d;
 }
 
 struct vfbfs_dir *
 vfbfs_dir_add_to(struct vfbfs *fs, struct vfbfs_dir *parent, struct vfbfs_dir *d)
 {
-    struct vfbfs_file *f = NULL;
+    struct vfbfs_entry *e;
 
     if (fs != NULL) {
-        f = d->vd_file;
+        e = d->d_entry;
         if (parent == NULL) {
             /* Add to '/' if the parent == NULL */
             parent = fs->fs_superblock->sb_root;
         }
-        d->vd_superblock = parent->vd_superblock;
-        f = vfbfs_file_add_to(fs, parent, f);
+        if (vfbfs_entry_add_to(fs, parent, e) != 0) {
+            return NULL;
+        }
+        /* Inherit everything from the parent, (overwriting superblock inheritance) */
+        d->d_dentry_oprs = parent->d_dentry_oprs;
+        d->d_dfile_oprs  = parent->d_dfile_oprs;
+        d->d_ddir_oprs   = parent->d_ddir_oprs;
+        d->d_superblock  = parent->d_superblock;
     }
-    return (struct vfbfs_dir *)f->vf_private;
+    return d;
 }
 
 struct vfbfs_dir *
@@ -137,4 +146,98 @@ vfbfs_dir_create_in(struct vfbfs *fs, struct vfbfs_dir *parent, const char *dnam
     }
     struct vfbfs_dir *d = vfbfs_dir_new(fs, strdup(dname));
     return vfbfs_dir_add_to(fs, parent, d);
+}
+
+int vfbfs_dir_call_operation_va_with(struct vfbfs *fs, struct vfbfs_dir *dir
+                    , struct vfbfs_dir_ops *oprs, enum VfbfsDirOperation op, va_list ap)
+{
+    struct fuse_file_info *fi;
+    struct vfbfs_entry *e;
+    const char *path;
+    if (dir == NULL) {
+        return -ENOENT;
+    }
+    if (oprs == NULL) {
+        if (dir->d_oprs == NULL) {
+            return -ENOSYS;
+        }
+        oprs = dir->d_oprs;
+    }
+    e    = dir->d_entry;
+    path = va_arg(ap, const char *);
+    switch (op) {
+        case VFBFS_D_CREATE:
+        if (oprs->d_create != NULL) {
+            return oprs->d_create(fs, dir, path, va_arg(ap, mode_t)
+                , va_arg(ap, struct fuse_file_info *));
+        }
+        break;
+
+        case VFBFS_D_OPEN:
+        if (oprs->d_open != NULL) {
+            fi = va_arg(ap, struct fuse_file_info *);
+            if (fi != NULL) {
+                fi->fh = (uint64_t)e;
+            }
+            return oprs->d_open(fs, dir, path, fi);
+        }
+        break;
+
+        case VFBFS_D_CLOSE:
+        if (oprs->d_close != NULL) {
+            return oprs->d_close(fs, dir, path, va_arg(ap, struct fuse_file_info *));
+        }
+        break;
+
+        case VFBFS_D_READ:
+        if (oprs->d_read != NULL) {
+            return oprs->d_read(fs, dir, path, va_arg(ap, void *), va_arg(ap, fuse_fill_dir_t)
+                , va_arg(ap, off_t), va_arg(ap, struct fuse_file_info *));
+        }
+        break;
+
+        case VFBFS_D_GETATTR:
+        if (oprs->d_getattr != NULL) {
+            return oprs->d_getattr(fs, dir, path, va_arg(ap, struct stat *));
+        } else {
+            if (e != NULL && e->e_oprs != NULL && e->e_oprs->e_getattr != NULL) {
+                return e->e_oprs->e_getattr(fs, e, path, va_arg(ap, struct stat *));
+            }
+        }
+        break;
+
+        case VFBFS_D_RELEASE:
+        /* FIXME: ??? */
+        if (oprs->d_release != NULL) {
+            return oprs->d_release(fs, dir, path, va_arg(ap, struct fuse_file_info *));
+        } else {
+            if (e != NULL && e->e_oprs != NULL && e->e_oprs->e_release != NULL) {
+                return e->e_oprs->e_release(fs, e, path, va_arg(ap, struct fuse_file_info *));
+            }
+        }
+        break;
+    }
+    return 0;
+}
+
+int vfbfs_dir_call_operation_with(struct vfbfs *fs, struct vfbfs_dir *dir
+                    , struct vfbfs_dir_ops *oprs, enum VfbfsDirOperation op, ...)
+{
+    int r;
+    va_list ap;
+    va_start(ap, op);
+    r = vfbfs_file_call_operation_va_with(fs, dir, oprs, op, ap);
+    va_end(ap);
+    return r;
+}
+
+int vfbfs_dir_call_operation(struct vfbfs *fs, struct vfbfs_dir *dir
+                    , enum VfbfsDirOperation op, ...)
+{
+    int r;
+    va_list ap;
+    va_start(ap, op);
+    r = vfbfs_dir_call_operation_va_with(fs, dir, NULL, op, ap);
+    va_end(ap);
+    return r;
 }
