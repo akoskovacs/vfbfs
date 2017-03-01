@@ -47,7 +47,7 @@ enum VfbfsDirOperation {
 };
 
 struct vfbfs_dir_ops {
-    int (*d_create)(struct vfbfs *, struct vfbfs_dir *, const char *, mode_t, struct fuse_file_info *);
+    int (*d_create)(struct vfbfs *, struct vfbfs_dir *, const char *, const char *, mode_t, struct fuse_file_info *);
     int (*d_open)(struct vfbfs *, struct vfbfs_dir *, const char *, struct fuse_file_info *);
     int (*d_close)(struct vfbfs *, struct vfbfs_dir *, const char *, struct fuse_file_info *);
     int (*d_read)(struct vfbfs *, struct vfbfs_dir *, const char *, void *, fuse_fill_dir_t, off_t, struct fuse_file_info *);
@@ -93,6 +93,9 @@ struct vfbfs_entry {
 void vfbfs_entry_init(struct vfbfs_entry *ent);
 void vfbfs_entry_init_generic(struct vfbfs_entry *ent);
 int  vfbfs_entry_add_to(struct vfbfs *fs, struct vfbfs_dir *parent, struct vfbfs_entry *entry);
+bool vfbfs_entry_is_dir(struct vfbfs_entry *);
+bool vfbfs_entry_is_file(struct vfbfs_entry *);
+
 struct vfbfs_entry       *vfbfs_entry_alloc(struct vfbfs *fs);
 struct vfbfs_entry       *vfbfs_entry_file_alloc(struct vfbfs *fs);
 struct vfbfs_entry       *vfbfs_entry_dir_alloc(struct vfbfs *fs);
@@ -100,6 +103,7 @@ struct vfbfs_entry       *vfbfs_entry_lookup(struct vfbfs *fs, const char *path)
 struct vfbfs_entry_ops   *vfbfs_entry_get_mem_ops(void);
 struct vfbfs_file        *vfbfs_entry_get_file(struct vfbfs_entry *e);
 struct vfbfs_dir         *vfbfs_entry_get_dir(struct vfbfs_entry *e);
+mode_t                    vfbfs_entry_set_mode(struct vfbfs_entry *e, mode_t mode);
 
 /*
  * Holds information about regular files including it's contents (f_private)
@@ -114,7 +118,6 @@ struct vfbfs_file {
     void                   *f_private;
 };
 
-bool                     vfbfs_file_is_dir(struct vfbfs_file *f);
 struct vfbfs_file       *vfbfs_file_new(struct vfbfs *fs, char *name);
 void                     vfbfs_file_init(struct vfbfs_file *f);
 struct vfbfs_file       *vfbfs_file_alloc(struct vfbfs *fs);

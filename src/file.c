@@ -20,8 +20,10 @@
 
 #include <vfbfs.h>
 
-#include <stdlib.h>
+#include <sys/param.h>
 #include <fcntl.h>
+
+#include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <unistd.h>
@@ -42,12 +44,21 @@ void vfbfs_entry_init(struct vfbfs_entry *e)
 
 void vfbfs_entry_init_generic(struct vfbfs_entry *e)
 {
-    e->e_stat.st_mode = 0444;
+    e->e_stat.st_mode = 0644;
     e->e_stat.st_uid  = getuid();
     e->e_stat.st_gid  = getgid();
     e->e_stat.st_nlink = 1;
     e->e_stat.st_ctime = e->e_stat.st_atime 
             = e->e_stat.st_mtime = time(NULL);
+}
+
+mode_t vfbfs_entry_set_mode(struct vfbfs_entry *e, mode_t mode)
+{
+    pthread_mutex_lock(&e->e_wlock);
+    mode_t omod = e->e_stat.st_mode;
+    e->e_stat.st_mode |= mode;
+    pthread_mutex_unlock(&e->e_wlock);
+    return omod;
 }
 
 struct vfbfs_entry *vfbfs_entry_alloc(struct vfbfs *fs)
@@ -78,7 +89,7 @@ struct vfbfs_entry *vfbfs_entry_dir_alloc(struct vfbfs *fs)
         return NULL;
     }
     vfbfs_entry_init_generic(e);
-    e->e_stat.st_mode |= S_IFDIR;
+    e->e_stat.st_mode |= 0744 | S_IFDIR;
     e->e_stat.st_size = 4096;
     return e;
 }
@@ -206,29 +217,28 @@ int vfbfs_mem_file_close(struct vfbfs *fs, struct vfbfs_file *f, const char *pat
 int vfbfs_mem_file_read(struct vfbfs *fs, struct vfbfs_file *file, const char *path
     , char *data, size_t size, off_t off, struct fuse_file_info *fi)
 {
-    pthread_mutex_lock(&file->f_lock);
     off_t fsize = vfbfs_file_get_size(file);
+//    pthread_mutex_lock(&file->f_lock);
     if (file->f_content != NULL) {
-        if (off + size >= fsize) {
-            size = fsize;
-        }
+        size = MIN(size, fsize);
         memcpy(data, file->f_content+off, size);
         return size;
     } else {
         size = 0;
     }
-    pthread_mutex_unlock(&file->f_lock);
+//    pthread_mutex_unlock(&file->f_lock);
     return size;
 }
 
 int vfbfs_mem_file_truncate(struct vfbfs *fs, struct vfbfs_file *file, const char *path, off_t size)
 {
-    pthread_mutex_lock(&file->f_lock);
+//    pthread_mutex_lock(&file->f_lock);
     if (file->f_content != NULL) {
         free(file->f_content);
     }
     file->f_content = calloc(size, sizeof(char));
     pthread_mutex_unlock(&file->f_lock);
+
     if (file->f_content == NULL) {
         vfbfs_file_set_size(file, 0);
         return -ENOSPC;
@@ -241,10 +251,10 @@ int vfbfs_mem_file_truncate(struct vfbfs *fs, struct vfbfs_file *file, const cha
 int vfbfs_mem_file_write(struct vfbfs *fs, struct vfbfs_file *file, const char *path
     , const char *data, size_t size, off_t off, struct fuse_file_info *fi)
 {
-    pthread_mutex_lock(&file->f_lock);
     off_t fsize = vfbfs_file_get_size(file);
     off_t nsize = fsize;
     void *nptr = NULL;
+//    pthread_mutex_lock(&file->f_lock);
     if (file->f_content != NULL) {
         if (off + size >= fsize) {
             nptr = realloc(file->f_content, off+size);
@@ -256,7 +266,7 @@ int vfbfs_mem_file_write(struct vfbfs *fs, struct vfbfs_file *file, const char *
         }
     }
     memcpy(file->f_content + off, data, size);
-    pthread_mutex_unlock(&file->f_lock);
+//    pthread_mutex_unlock(&file->f_lock);
     if (fsize != nsize) {
         vfbfs_file_set_size(file, nsize);
     }
@@ -343,18 +353,27 @@ struct vfbfs_file *vfbfs_file_new(struct vfbfs *fs, char *name)
 void vfbfs_file_inherit(struct vfbfs_dir *d, struct vfbfs_file *f)
 {
     struct vfbfs_entry *fe = f->f_entry;
+    /* Lock file */
+    pthread_mutex_lock(&f->f_lock);
+    /* Lock parent directory readlock  */
+    pthread_rwlock_rdlock(&d->d_rwlock);
+
+    /* Lock entry */
     pthread_mutex_lock(&fe->e_wlock);
     fe->e_parent = d;
     /* Use the directory's default file operations if none is set */
     if (fe->e_oprs == NULL) {
         fe->e_oprs   = d->d_dentry_oprs;
     }
+    /* Unlock entry */
     pthread_mutex_unlock(&fe->e_wlock);
 
-    pthread_mutex_lock(&f->f_lock);
     if (f->f_oprs == NULL) {
         f->f_oprs = d->d_dfile_oprs;
     }
+    /* Unlock parent-reader */
+    pthread_rwlock_unlock(&d->d_rwlock);
+    /* Unlock file */
     pthread_mutex_unlock(&f->f_lock);
 }
 
@@ -366,6 +385,11 @@ int vfbfs_entry_add_to(struct vfbfs *fs, struct vfbfs_dir *parent, struct vfbfs_
     pthread_rwlock_wrlock(&parent->d_rwlock);
     RB_INSERT(VFBFS_ENTRY_TREE, &parent->d_entries, e);
     pthread_rwlock_unlock(&parent->d_rwlock);
+
+    pthread_mutex_lock(&e->e_wlock);
+    e->e_parent = parent;
+    e->e_oprs   = parent->d_dentry_oprs;
+    pthread_mutex_unlock(&e->e_wlock);
     return 0;
 }
 
@@ -464,7 +488,11 @@ int vfbfs_file_call_operation_va_with(struct vfbfs *fs, struct vfbfs_file *file
 {
     struct fuse_file_info *fi;
     struct vfbfs_entry *e;
-    const char *path;
+    const char *path, *wdata;
+    char *rdata;
+    off_t off;
+    size_t size;
+
     if (file == NULL) {
         return -ENOENT;
     }
@@ -494,16 +522,22 @@ int vfbfs_file_call_operation_va_with(struct vfbfs *fs, struct vfbfs_file *file
         break;
 
         case VFBFS_F_READ:
+        rdata = va_arg(ap, char *);
+        size  = va_arg(ap, size_t); 
+        off   = va_arg(ap, off_t); 
+        fi    = va_arg(ap, struct fuse_file_info *);
         if (oprs->f_read != NULL) {
-            return oprs->f_read(fs, file, path, va_arg(ap, char *)
-                , va_arg(ap, size_t), va_arg(ap, off_t), va_arg(ap, struct fuse_file_info *));
+            return oprs->f_read(fs, file, path, rdata, size, off, fi);
         }
         break;
 
         case VFBFS_F_WRITE:
+        wdata = va_arg(ap, const char *);
+        size  = va_arg(ap, size_t); 
+        off   = va_arg(ap, off_t); 
+        fi    = va_arg(ap, struct fuse_file_info *);
         if (oprs->f_write != NULL) {
-            return oprs->f_write(fs, file, path, va_arg(ap, const char *)
-                , va_arg(ap, size_t), va_arg(ap, off_t), va_arg(ap, struct fuse_file_info *));
+            return oprs->f_write(fs, file, path, wdata, size, off, fi);
         }
         break;
 

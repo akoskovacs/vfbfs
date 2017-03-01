@@ -164,9 +164,9 @@ static int vfbfs_fo_getattr(const char *path, struct stat *st)
     struct vfbfs_entry *e   = vfbfs_entry_lookup(fs, path);
     if (e != NULL) {
         if (vfbfs_entry_is_dir(e)) {
-            return vfbfs_dir_call_operation(fs, e->e_elem.dir, VFBFS_D_GETATTR, st);
+            return vfbfs_dir_call_operation(fs, e->e_elem.dir, VFBFS_D_GETATTR, path, st);
         } else {
-            return vfbfs_file_call_operation(fs, e->e_elem.file, VFBFS_F_GETATTR, st);
+            return vfbfs_file_call_operation(fs, e->e_elem.file, VFBFS_F_GETATTR, path, st);
         }
     }
     return -ENOENT;
@@ -174,8 +174,24 @@ static int vfbfs_fo_getattr(const char *path, struct stat *st)
 
 static int vfbfs_fo_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
-    /* dir lookup */
-    return 0;
+    struct vfbfs *fs        = vfbfs_get_fs();
+    char         *dirname   = strdup(path);
+    const char *fname       = strrchr(path, '/')+1;
+    struct vfbfs_entry *e;
+    if (dirname == NULL || fname == NULL) {
+        return -ENOSPC;
+    }
+    dirname[fname-path] = '\0';
+    e = vfbfs_entry_lookup(fs, dirname);
+    if (e == NULL) {
+        return -ENOENT;
+    }
+    free(dirname);
+    if (vfbfs_entry_is_dir(e)) {
+        return vfbfs_dir_call_operation(fs, e->e_elem.dir, VFBFS_D_CREATE, path, fname, mode, fi);
+    }
+
+    return -ENOTDIR;
 }
 
 static int vfbfs_fo_opendir(const char *path, struct fuse_file_info *fi)
@@ -252,10 +268,22 @@ struct vfbfs_superblock *vfbfs_superblock_alloc(struct vfbfs *fs)
 struct vfbfs *vfbfs_init(struct vfbfs *fs)
 {
     struct vfbfs_superblock *sb = vfbfs_superblock_alloc(fs);
+    struct vfbfs_dir *root = vfbfs_dir_new(fs, strdup("/"));
+    if (sb == NULL || root == NULL) {
+        free(sb);
+        free(root);
+        return NULL;
+    }
     fs->fs_superblock = sb;
-    sb->sb_fs = fs;
-    sb->sb_root = vfbfs_dir_new(fs, strdup("/"));
-    sb->sb_root->d_superblock = sb;
+    sb->sb_fs         = fs;
+    sb->sb_root       = root;
+
+    root->d_oprs          = sb->sb_ddir_oprs;
+    root->d_dentry_oprs   = sb->sb_dentry_oprs;
+    root->d_dfile_oprs    = sb->sb_dfile_oprs;
+    root->d_ddir_oprs     = root->d_oprs;
+    root->d_entry->e_oprs = sb->sb_dentry_oprs;
+    root->d_superblock    = sb;
     return fs;
 }
 

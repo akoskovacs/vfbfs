@@ -49,6 +49,17 @@ int vfbfs_gen_dir_read(struct vfbfs *fs, struct vfbfs_dir *dir
     return 0;
 }
 
+int vfbfs_gen_dir_create(struct vfbfs *fs, struct vfbfs_dir *dir
+    , const char *path, const char *fname, mode_t mode, struct fuse_file_info *fi)
+{
+    struct vfbfs_file *f = vfbfs_file_create_in(fs, dir, fname);
+    if (f != NULL) {
+        vfbfs_entry_set_mode(f->f_entry, mode);
+        return 0;
+    }
+    return -EIO;
+}
+
 struct vfbfs_dir *vfbfs_get_rootdir(struct vfbfs *fs)
 {
     if (fs != NULL && fs->fs_superblock != NULL && fs->fs_superblock->sb_root != NULL) {
@@ -81,11 +92,11 @@ struct vfbfs_dir *vfbfs_dir_alloc(struct vfbfs *fs)
 }
 
 static struct vfbfs_dir_ops vfbfs_dir_gen_oprs = {
+    .d_create   = vfbfs_gen_dir_create,
     .d_read     = vfbfs_gen_dir_read,
     .d_open     = vfbfs_gen_dir_open,
     .d_close    = NULL,
     .d_getattr  = NULL,
-    .d_create   = NULL,
 };
 
 struct vfbfs_dir_ops *vfbfs_dir_get_generic_ops(void)
@@ -121,19 +132,26 @@ vfbfs_dir_add_to(struct vfbfs *fs, struct vfbfs_dir *parent, struct vfbfs_dir *d
     struct vfbfs_entry *e;
 
     if (fs != NULL) {
-        e = d->d_entry;
         if (parent == NULL) {
             /* Add to '/' if the parent == NULL */
             parent = fs->fs_superblock->sb_root;
         }
+        e = d->d_entry;
+        /* vfbfs_entry_add_to() will write-unlock d_rwlock by itself. */
         if (vfbfs_entry_add_to(fs, parent, e) != 0) {
             return NULL;
         }
+        pthread_rwlock_wrlock(&d->d_rwlock);
+        pthread_rwlock_rdlock(&parent->d_rwlock);
         /* Inherit everything from the parent, (overwriting superblock inheritance) */
         d->d_dentry_oprs = parent->d_dentry_oprs;
         d->d_dfile_oprs  = parent->d_dfile_oprs;
         d->d_ddir_oprs   = parent->d_ddir_oprs;
         d->d_superblock  = parent->d_superblock;
+
+        d->d_oprs        = parent->d_ddir_oprs;
+        pthread_rwlock_unlock(&parent->d_rwlock);
+        pthread_rwlock_unlock(&d->d_rwlock);
     }
     return d;
 }
@@ -153,7 +171,8 @@ int vfbfs_dir_call_operation_va_with(struct vfbfs *fs, struct vfbfs_dir *dir
 {
     struct fuse_file_info *fi;
     struct vfbfs_entry *e;
-    const char *path;
+    const char *path, *fname;
+    mode_t mode;
     if (dir == NULL) {
         return -ENOENT;
     }
@@ -168,7 +187,9 @@ int vfbfs_dir_call_operation_va_with(struct vfbfs *fs, struct vfbfs_dir *dir
     switch (op) {
         case VFBFS_D_CREATE:
         if (oprs->d_create != NULL) {
-            return oprs->d_create(fs, dir, path, va_arg(ap, mode_t)
+            fname = va_arg(ap, const char *);
+            mode  = va_arg(ap, mode_t);
+            return oprs->d_create(fs, dir, path, fname, mode
                 , va_arg(ap, struct fuse_file_info *));
         }
         break;
@@ -191,8 +212,11 @@ int vfbfs_dir_call_operation_va_with(struct vfbfs *fs, struct vfbfs_dir *dir
 
         case VFBFS_D_READ:
         if (oprs->d_read != NULL) {
-            return oprs->d_read(fs, dir, path, va_arg(ap, void *), va_arg(ap, fuse_fill_dir_t)
-                , va_arg(ap, off_t), va_arg(ap, struct fuse_file_info *));
+            void *buf                 = va_arg(ap, void *);
+            fuse_fill_dir_t filler    = va_arg(ap, fuse_fill_dir_t);
+            off_t off                 = va_arg(ap, off_t);
+            fi                        = va_arg(ap, struct fuse_file_info *);
+            return oprs->d_read(fs, dir, path, buf, filler, off, fi);
         }
         break;
 
@@ -226,7 +250,7 @@ int vfbfs_dir_call_operation_with(struct vfbfs *fs, struct vfbfs_dir *dir
     int r;
     va_list ap;
     va_start(ap, op);
-    r = vfbfs_file_call_operation_va_with(fs, dir, oprs, op, ap);
+    r = vfbfs_dir_call_operation_va_with(fs, dir, oprs, op, ap);
     va_end(ap);
     return r;
 }
