@@ -193,12 +193,17 @@ int vfbfs_mem_file_open(struct vfbfs *fs, struct vfbfs_file *f, const char *path
 {
     int cap;
     struct vfbfs_entry *e = f->f_entry;
+    if (fi->flags & O_CREAT) {
+        //vfbfs_dir_call_operation(fs, file, VFBFS_D_CREATE))
+    }
+    #if 0
     if (e != NULL && e->e_oprs != NULL && e->e_oprs->e_is_capable != NULL) {
         cap = e->e_oprs->e_is_capable(fs, e, path, fi->flags);
         if (cap != 0) {
             return cap;
         }
     }
+    #endif
     pthread_mutex_lock(&f->f_lock);
     f->f_open_count++;
     pthread_mutex_unlock(&f->f_lock);
@@ -236,10 +241,11 @@ int vfbfs_mem_file_truncate(struct vfbfs *fs, struct vfbfs_file *file, const cha
     if (file->f_content != NULL) {
         free(file->f_content);
     }
-    file->f_content = calloc(size, sizeof(char));
+    file->f_content      = calloc(size, sizeof(char));
     pthread_mutex_unlock(&file->f_lock);
 
     if (file->f_content == NULL) {
+        file->f_content_size = size * sizeof(char);
         vfbfs_file_set_size(file, 0);
         return -ENOSPC;
     }
@@ -256,21 +262,27 @@ int vfbfs_mem_file_write(struct vfbfs *fs, struct vfbfs_file *file, const char *
     void *nptr = NULL;
 //    pthread_mutex_lock(&file->f_lock);
     if (file->f_content != NULL) {
-        if (off + size >= fsize) {
-            nptr = realloc(file->f_content, off+size);
-            if (nptr == NULL) {
-                return -ENOSPC;
-            }
-            file->f_content = nptr;
-            nsize = off+size;
+        if (off + size > file->f_content_size) {
+            nptr = realloc(file->f_content, off+size+1);
+        } else {
+            memcpy(file->f_content + off, data, size);
+            return size;
         }
+    } else {
+        nptr = calloc(off+size+1, sizeof(char));
     }
+    if (nptr == NULL) {
+        return -ENOSPC;
+    }
+    nsize = off+size+1;
+    file->f_content = nptr;
+    file->f_content_size = nsize;
     memcpy(file->f_content + off, data, size);
 //    pthread_mutex_unlock(&file->f_lock);
     if (fsize != nsize) {
         vfbfs_file_set_size(file, nsize);
     }
-    return 0;
+    return size;
 }
 
 int vfbfs_mem_file_release(struct vfbfs *fs, struct vfbfs_file *file
@@ -310,12 +322,13 @@ struct vfbfs_entry_ops *vfbfs_entry_get_mem_ops(void)
 
 void vfbfs_file_init(struct vfbfs_file *f)
 {
-    f->f_entry = NULL;
-    f->f_oprs  = NULL;
-    f->f_open_count  = 0;
+    f->f_entry        = NULL;
+    f->f_oprs         = NULL;
+    f->f_open_count   = 0;
+    f->f_content_size = 0;
+    f->f_content      = NULL;
+    f->f_private      = NULL;
     pthread_mutex_init(&f->f_lock, NULL);
-    f->f_content = NULL;
-    f->f_private = NULL;
 }
 
 struct vfbfs_file *vfbfs_file_alloc(struct vfbfs *fs)
@@ -475,6 +488,58 @@ struct vfbfs_entry *vfbfs_entry_lookup(struct vfbfs *fs, const char *path)
     /* FIXME: should check the last entry's name? */
     free(apath);
     return e;
+}
+
+int vfbfs_entry_lookup_parent(struct vfbfs *fs, const char *path
+    , struct vfbfs_dir **parent, struct vfbfs_entry **entry, char **file_name)
+{
+    char *dirname;
+    const char *fname;
+    struct vfbfs_entry *pent, *fent;
+    int r = 0;
+
+    *parent = NULL;
+    *entry  = NULL;
+    *file_name = NULL;
+    if (path[0] == '/' && path[1] == '\0') {
+        *entry  = vfbfs_get_rootdir(fs)->d_entry; 
+        return r;
+    }
+
+    /* Need a new string, just for the path of the directory */
+    dirname = strdup(path);
+    /* The file's name is the string after the last slash */
+    fname   = strrchr(path, '/')+1;
+
+    if (dirname == NULL || fname == NULL) {
+        r = -ENOSPC;
+        goto free_and_return;
+    }
+
+    /* The directory's path ends on the last '/' charecter */
+    dirname[fname-path-1] = '\0';
+    pent = vfbfs_entry_lookup(fs, dirname);
+    if (pent == NULL) {
+        r = -ENOENT;
+        goto free_and_return;
+    }
+    if (!vfbfs_entry_is_dir(pent)) {
+        r = -ENOTDIR;
+        goto free_and_return;
+    }
+    *parent = pent->e_elem.dir;
+    *file_name = fname;
+    /* Optionaly we can get the file (if it exsits) */
+    fent = vfbfs_entry_find_in(fs,  pent, fname);
+    if (fent == NULL) {
+        r = -ENOENT;
+        goto free_and_return;
+    }
+    *entry = fent;
+
+free_and_return:
+    free(dirname);
+    return r;
 }
 
 struct vfbfs_file *vfbfs_file_lookup(struct vfbfs *fs, const char *path)

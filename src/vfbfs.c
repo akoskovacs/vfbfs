@@ -71,7 +71,7 @@ static int vfbfs_fo_open(const char *path, struct fuse_file_info *fi)
     struct vfbfs_file  *f = vfbfs_entry_get_file(e);
     if (e == NULL) {
         return -ENOENT;
-    } 
+    }
     if (f) {
         return vfbfs_file_call_operation(fs, f, VFBFS_F_OPEN, path, fi);
     }
@@ -101,7 +101,7 @@ static int vfbfs_fo_write(const char *path, const char *data, size_t size
     struct vfbfs_file  *f = vfbfs_entry_get_file(e);
     if (e == NULL) {
         return -EBADF;
-    } 
+    }
     if (f) {
         return vfbfs_file_call_operation(fs, f, VFBFS_F_WRITE, path, data, size, off, fi);
     }
@@ -115,7 +115,7 @@ static int vfbfs_fo_truncate(const char *path, off_t size)
     struct vfbfs_file  *f = vfbfs_entry_get_file(e);
     if (e == NULL) {
         return -EBADF;
-    } 
+    }
     if (f) {
         return vfbfs_file_call_operation(fs, f, VFBFS_F_TRUNCATE, path, size);
     }
@@ -137,7 +137,7 @@ static int vfbfs_fo_close(const char *path, struct fuse_file_info *fi)
     struct vfbfs_file  *f = vfbfs_entry_get_file(e);
     if (e == NULL) {
         return -EBADF;
-    } 
+    }
     if (f) {
         return vfbfs_file_call_operation(fs, f, VFBFS_F_CLOSE, path, fi);
     }
@@ -151,7 +151,7 @@ static int vfbfs_fo_release(const char *path, struct fuse_file_info *fi)
     struct vfbfs_file  *f = vfbfs_entry_get_file(e);
     if (e == NULL) {
         return -EBADF;
-    } 
+    }
     if (f) {
         return vfbfs_file_call_operation(fs, f, VFBFS_F_RELEASE, path, fi);
     }
@@ -172,26 +172,29 @@ static int vfbfs_fo_getattr(const char *path, struct stat *st)
     return -ENOENT;
 }
 
+static int vfbfs_fo_ioctl(const char *path, int cmd, void *arg, struct fuse_file_info *fi
+        , unsigned int flags, void *data)
+{
+    struct vfbfs *fs        = vfbfs_get_fs();
+    struct vfbfs_entry *e   = vfbfs_entry_lookup(fs, path);
+}
+
 static int vfbfs_fo_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
     struct vfbfs *fs        = vfbfs_get_fs();
-    char         *dirname   = strdup(path);
-    const char *fname       = strrchr(path, '/')+1;
+    char *name;
     struct vfbfs_entry *e;
-    if (dirname == NULL || fname == NULL) {
-        return -ENOSPC;
+    struct vfbfs_dir *parent;
+    int r;
+    if ((r = vfbfs_entry_lookup_parent(fs, path, &parent, &e, &name)) != 0) {
+        return r;
     }
-    dirname[fname-path] = '\0';
-    e = vfbfs_entry_lookup(fs, dirname);
-    if (e == NULL) {
-        return -ENOENT;
-    }
-    free(dirname);
-    if (vfbfs_entry_is_dir(e)) {
-        return vfbfs_dir_call_operation(fs, e->e_elem.dir, VFBFS_D_CREATE, path, fname, mode, fi);
-    }
+    return vfbfs_dir_call_operation(fs, parent, VFBFS_D_CREATE, path, name, mode, fi);
+}
 
-    return -ENOTDIR;
+static int vfbfs_fo_mkdir(const char *path, mode_t mode, struct fuse_file_info *fi)
+{
+
 }
 
 static int vfbfs_fo_opendir(const char *path, struct fuse_file_info *fi)
@@ -256,8 +259,10 @@ struct vfbfs_superblock *vfbfs_superblock_alloc(struct vfbfs *fs)
         //.close      = vfbfs_fo_close, // noexist
         .release    = vfbfs_fo_release,
         .getattr    = vfbfs_fo_getattr,
+        .ioctl      = vfbfs_fo_ioctl,
 
         .create     = vfbfs_fo_create,
+        .mkdir      = vfbfs_fo_mkdir,
         .opendir    = vfbfs_fo_opendir,
         .readdir    = vfbfs_fo_readdir,
         .releasedir = vfbfs_fo_releasedir
@@ -312,11 +317,37 @@ int vfbfs_main(struct vfbfs *fs, int argc, char *argv[])
     return fuse_main(args.argc, args.argv, &sb->sb_fs_oprs, fs);
 }
 
+static long opencount = 0;
+#define BUFF_SIZE 60
+static char buff[BUFF_SIZE];
+static off_t buff_len = 0;
+void make_buff(struct vfbfs_file *f)
+{
+    snprintf(buff, BUFF_SIZE, "This file has been opened %ld time%s.\n", opencount, opencount < 2 ? "" : "s");
+    buff_len = strlen(buff);
+    vfbfs_file_set_size(f, buff_len);
+}
+
+int oc_open(struct vfbfs *fs, struct vfbfs_file *f, const char *path, struct fuse_file_info *fi)
+{
+    make_buff(f);
+    opencount++;
+    return 0;
+}
+
+int oc_read(struct vfbfs *fs, struct vfbfs_file *f, const char *path
+        , char *data, size_t size, off_t off, struct fuse_file_info *fi)
+{
+    size = MIN(size, buff_len);
+    memcpy(data, buff+off, size);
+    return size;
+}
+
 int main(int argc, char *argv[])
 {
     struct vfbfs fs;
     struct vfbfs_dir *fb, *config;
-    struct vfbfs_file *readme, *empty;
+    struct vfbfs_file *readme, *empty, *oc;
     char *msg = strdup("This is a readme file!\n");
 
     /* TODO --help */
@@ -328,6 +359,10 @@ int main(int argc, char *argv[])
     readme = vfbfs_file_create_in(&fs, config, "readme.txt");
     empty  = vfbfs_file_create_in(&fs, config, "empty.txt");
     readme->f_content = msg;
+    oc  = vfbfs_file_create_in(&fs, config, "opencount.txt");
+    oc->f_oprs->f_open = oc_open;
+    oc->f_oprs->f_read = oc_read;
+    make_buff(oc);
     vfbfs_file_set_size(readme, strlen(msg));
 
     return vfbfs_main(&fs, argc, argv);

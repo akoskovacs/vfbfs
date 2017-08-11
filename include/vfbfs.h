@@ -30,6 +30,10 @@
 #include <stdbool.h>
 #include <syslog.h>
 
+#ifndef MIN
+# define MIN(a, b) ((a) < (b) ? (a) : (b))
+#endif
+
 struct vfbfs;
 struct vfbfs_entry;
 struct vfbfs_file;
@@ -43,7 +47,8 @@ struct vfbfs_entry_ops {
 };
 
 enum VfbfsDirOperation {
-      VFBFS_D_CREATE, VFBFS_D_OPEN, VFBFS_D_CLOSE, VFBFS_D_READ, VFBFS_D_GETATTR, VFBFS_D_RELEASE
+      VFBFS_D_CREATE, VFBFS_D_OPEN, VFBFS_D_CLOSE, VFBFS_D_READ, VFBFS_D_GETATTR
+    , VFBFS_D_RELEASE, VFBFS_D_MKDIR
 };
 
 struct vfbfs_dir_ops {
@@ -53,6 +58,7 @@ struct vfbfs_dir_ops {
     int (*d_read)(struct vfbfs *, struct vfbfs_dir *, const char *, void *, fuse_fill_dir_t, off_t, struct fuse_file_info *);
     int (*d_getattr)(struct vfbfs *, struct vfbfs_dir *, const char *, struct stat *);
     int (*d_release)(struct vfbfs *, struct vfbfs_dir *, const char *, struct fuse_file_info *);
+    int (*d_mkdir)(struct vfbfs *, struct vfbfs_dir *, const char *, const char *, mode_t, struct fuse_file_info *);
 };
 
 enum VfbfsFileOperation {
@@ -115,6 +121,7 @@ struct vfbfs_file {
     size_t                  f_open_count;  /* currently open count */
     pthread_mutex_t         f_lock;        /* must held a lock to access file */
     char                   *f_content;
+    off_t                   f_content_size; /* size of the allocated memory for f_content */
     void                   *f_private;
 };
 
@@ -183,6 +190,8 @@ struct vfbfs            *vfbfs_init(struct vfbfs *fs);
 struct vfbfs            *vfbfs_new(void);
 int                      vfbfs_main(struct vfbfs *fs, int argc, char *argv[]);
 struct vfbfs_file       *vfbfs_lookup(struct vfbfs *fs, const char *path);
+int vfbfs_entry_lookup_parent(struct vfbfs *fs, const char *path
+    , struct vfbfs_dir **parent, struct vfbfs_entry **entry, char **file_name);
 
 struct vfbfs_dir        *vfbfs_get_rootdir(struct vfbfs *fs);
 struct vfbfs            *vfbfs_get_fs(void);
